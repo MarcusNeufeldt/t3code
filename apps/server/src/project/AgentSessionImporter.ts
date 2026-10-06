@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -70,6 +71,15 @@ class AgentSessionThreadProjectConflictError extends Schema.TaggedError<AgentSes
 ) {
   override get message(): string {
     return `Imported thread '${this.threadId}' belongs to project '${this.actualProjectId}', not '${this.expectedProjectId}'.`;
+  }
+}
+
+class AgentSessionAlreadyLinkedError extends Schema.TaggedError<AgentSessionAlreadyLinkedError>()(
+  "AgentSessionAlreadyLinkedError",
+  { filePath: Schema.String },
+) {
+  override get message(): string {
+    return `Session file '${this.filePath}' already belongs to a T3 thread.`;
   }
 }
 
@@ -172,6 +182,17 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  const sql = yield* SqlClient.SqlClient;
+  // Pi threads started in T3 store the session file as their native ref.
+  // Importing that file again would give one Pi session two T3 threads.
+  const isPiSessionFileLinked = (filePath: string) =>
+    sql<{ readonly linked: number }>`
+      SELECT 1 AS linked
+      FROM orchestration_v2_projection_provider_threads
+      WHERE provider = 'pi'
+        AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${filePath}
+      LIMIT 1
+    `.pipe(Effect.map((rows) => rows.length > 0));
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
   ) {
@@ -264,12 +285,18 @@ const make = Effect.gen(function* () {
             yield* runtimes.recordImportedTranscript({ threadId, source });
             return true;
           }
+          // Pi resumes a session by its file path, not by the session ID.
+          const nativeThreadId =
+            thread.source === "pi" ? source.filePath : thread.providerSessionId;
+          if (thread.source === "pi" && (yield* isPiSessionFileLinked(nativeThreadId))) {
+            return yield* new AgentSessionAlreadyLinkedError({ filePath: nativeThreadId });
+          }
 
           const driver = ProviderDriverKind.make(thread.source);
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
           const providerThreadId = idAllocator.derive.providerThread({
             driver,
-            nativeThreadId: thread.providerSessionId,
+            nativeThreadId,
           });
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
@@ -318,7 +345,7 @@ const make = Effect.gen(function* () {
             ownerNodeId: null,
             nativeThreadRef: {
               driver,
-              nativeId: thread.providerSessionId,
+              nativeId: nativeThreadId,
               strength: "strong",
             },
             nativeConversationHeadRef: null,
@@ -344,7 +371,7 @@ const make = Effect.gen(function* () {
               resumeCursor:
                 thread.source === "codex"
                   ? { threadId: thread.providerSessionId }
-                  : { threadId, resume: thread.providerSessionId },
+                  : { threadId, resume: nativeThreadId },
               runtimePayload: { cwd: project.workspaceRoot },
             },
             { onConflict: "ignore" },
