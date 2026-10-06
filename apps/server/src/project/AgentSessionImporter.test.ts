@@ -17,8 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -385,4 +385,82 @@ it.effect(
         runtimePayload: { importedTranscripts: [source.source] },
       });
     }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+const piSessionFile = "/home/user/.pi/agent/sessions/--work-project--/2026-10-06_x.jsonl";
+const piThreadId = ThreadId.make("import:pi:01a11197-d16e-73e2-806a-55ad1649307d");
+
+function piCandidate() {
+  const providerInstanceId = ProviderInstanceId.make("pi");
+  const providerSessionId = "01a11197-d16e-73e2-806a-55ad1649307d";
+  return {
+    _tag: "Importable" as const,
+    source: {
+      provider: "pi" as const,
+      providerInstanceId,
+      providerSessionId,
+      filePath: piSessionFile,
+      size: 100,
+      mtimeMs: 2,
+      device: 3,
+      inode: 4,
+      birthtimeMs: 1,
+    },
+    thread: {
+      source: "pi" as const,
+      providerInstanceId,
+      providerSessionId,
+      title: "BOL-1 INVESTIGATE: Broken deck",
+      model: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      messages: [
+        { role: "user" as const, text: "Investigate", createdAt: timestamp },
+        { role: "assistant" as const, text: "Found it", createdAt: timestamp },
+      ],
+      leafEntryId: "a2",
+    },
+  } satisfies AgentSessionScanner.AgentSessionRecentThread;
+}
+
+it.effect("imports a Pi session bound to its session file, with the import head", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+    const source = piCandidate();
+    const threadId = piThreadId;
+    // The shared helpers are typed for Codex/Claude candidates; the Pi shape is the same.
+    const importer = yield* makeImporter([source] as never);
+
+    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+    const records = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    expect(records.thread.title).toBe("BOL-1 INVESTIGATE: Broken deck");
+    expect(records.providerThreads[0]).toMatchObject({
+      driver: "pi",
+      nativeThreadRef: { driver: "pi", nativeId: piSessionFile, strength: "strong" },
+      nativeConversationHeadRef: { driver: "pi", nativeId: "a2", strength: "strong" },
+    });
+    expect(Option.getOrThrow(yield* runtimes.getByThreadId({ threadId }))).toMatchObject({
+      resumeCursor: { threadId, resume: piSessionFile },
+    });
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+it.effect("skips a Pi session file that already belongs to a T3 thread", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const source = piCandidate();
+    const payload = `{"nativeThreadRef":{"driver":"pi","nativeId":"${piSessionFile}"}}`;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_provider_threads
+        (provider_thread_id, thread_id, provider, status, updated_at, payload_json)
+      VALUES ('pt-native', 'thread-native', 'pi', 'idle', ${timestamp}, ${payload})
+    `;
+    const importer = yield* makeImporter([source] as never);
+
+    expect(yield* importer.run).toEqual({ importedCount: 0, skippedCount: 1 });
+    expect(yield* Effect.option(projections.getThread(piThreadId))).toEqual(Option.none());
+    expect(importer.published).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
 );
