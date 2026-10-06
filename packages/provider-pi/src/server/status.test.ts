@@ -48,7 +48,13 @@ function piProbeSpawner(version: string) {
   });
 }
 
-function delayedPiProbeSpawner(startupDelayMs: number, started: Deferred.Deferred<void>) {
+function delayedPiProbeSpawner(
+  startupDelayMs: number,
+  started: Deferred.Deferred<void>,
+  models: ReadonlyArray<Record<string, string>> = [
+    { provider: "extension-provider", id: "custom-model" },
+  ],
+) {
   return ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       const args = ChildProcess.isStandardCommand(command) ? command.args : [];
@@ -71,7 +77,7 @@ function delayedPiProbeSpawner(startupDelayMs: number, started: Deferred.Deferre
             }
             const data =
               request.type === "get_available_models"
-                ? { models: [{ provider: "extension-provider", id: "custom-model" }] }
+                ? { models }
                 : request.type === "get_commands"
                   ? { commands: [] }
                   : {};
@@ -114,6 +120,44 @@ describe("PiProvider", () => {
       assert.deepEqual(
         snapshot.models.map((model) => model.slug),
         ["default", "extension-provider/custom-model"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("labels models by Pi provider and groups them without changing slugs", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const probe = yield* checkPiProviderStatus(settings).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          delayedPiProbeSpawner(0, started, [
+            { provider: "openai-codex", id: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
+            { provider: "claude-bridge", id: "claude-opus-5", name: "Claude Opus 5" },
+            { provider: "openrouter", id: "openai/gpt-sol", name: "OpenAI: GPT Sol Latest" },
+            { provider: "openai-codex", id: "gpt-6.1-luna", name: "GPT-6.1 Luna" },
+            { provider: "anthropic", id: "claude-opus-5", name: "Claude Opus 5" },
+            { provider: "opencode-go", id: "kimi", name: "Kimi" },
+            { provider: "xai", id: "grok-5", name: "Grok 5" },
+            { provider: "nano-gpt", id: "unnamed-model" },
+          ]),
+        ),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(started);
+      const snapshot = yield* Fiber.join(probe);
+      assert.deepEqual(
+        snapshot.models.map((model) => [model.slug, model.name]),
+        [
+          ["default", "Pi default"],
+          ["openai-codex/gpt-6.1-sol", "Codex · GPT-6.1 Sol"],
+          ["openai-codex/gpt-6.1-luna", "Codex · GPT-6.1 Luna"],
+          ["claude-bridge/claude-opus-5", "Claude · Claude Opus 5"],
+          ["openrouter/openai/gpt-sol", "OpenRouter · OpenAI: GPT Sol Latest"],
+          ["anthropic/claude-opus-5", "Anthropic · Claude Opus 5"],
+          ["opencode-go/kimi", "OpenCode Go · Kimi"],
+          ["xai/grok-5", "xAI · Grok 5"],
+          ["nano-gpt/unnamed-model", "nano-gpt · unnamed-model"],
+        ],
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
