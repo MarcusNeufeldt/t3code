@@ -270,6 +270,7 @@ import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerDictationButton } from "./ComposerDictationButton";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -6197,6 +6198,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const insertDictatedText = useCallback(
+    (text: string) => insertComposerText(text, "cursor", { ensureLeadingBoundary: true }),
+    [insertComposerText],
+  );
+
   const insertComposerTextAtEnd = useCallback<ChatComposerHandle["insertTextAtEnd"]>(
     (text, options) => {
       const inserted = insertComposerText(text, "end", options);
@@ -7581,6 +7587,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  <ComposerDictationButton
+                    disabled={isConnecting}
+                    onTranscript={insertDictatedText}
+                  />
                   {showComposerAttachAction ? (
                     <>
                       <input
