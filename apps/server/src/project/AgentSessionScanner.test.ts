@@ -3200,3 +3200,190 @@ describe("parseAgentSessionTranscript", () => {
     expect(thread?.messages.at(-1)?.text).toBe("Assistant update 249");
   });
 });
+
+it.layer(NodeServices.layer)("AgentSessionScanner Pi sessions", (it) => {
+  const nowMs = Date.parse("2026-10-06T12:00:00.000Z");
+  const piSession = (input: {
+    readonly id: string;
+    readonly cwd: string;
+    readonly name?: string;
+    readonly firstPrompt?: string;
+  }) =>
+    [
+      {
+        type: "session",
+        version: 3,
+        id: input.id,
+        cwd: input.cwd,
+        timestamp: "2026-10-06T10:00:00.000Z",
+      },
+      { type: "model_change", id: "m1", parentId: null, provider: "openai", modelId: "gpt-5" },
+      {
+        type: "message",
+        id: "u1",
+        parentId: "m1",
+        timestamp: "2026-10-06T10:00:01.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: input.firstPrompt ?? "Triage the ticket" }],
+        },
+      },
+      {
+        type: "message",
+        id: "a1",
+        parentId: "u1",
+        timestamp: "2026-10-06T10:00:02.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "hidden" },
+            { type: "toolCall", id: "t1", name: "bash" },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "r1",
+        parentId: "a1",
+        message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] },
+      },
+      {
+        type: "message",
+        id: "a2",
+        parentId: "r1",
+        timestamp: "2026-10-06T10:00:03.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "Abandoned answer" }] },
+      },
+      // The user went back to r1 and continued; Pi resumes from this newer branch.
+      {
+        type: "message",
+        id: "a3",
+        parentId: "r1",
+        timestamp: "2026-10-06T10:00:04.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
+      },
+      ...(input.name === undefined
+        ? []
+        : [{ type: "session_info", id: "i1", parentId: "a3", name: input.name }]),
+    ]
+      .map((record) => encodeTranscriptRecord(record))
+      .join("\n") + "\n";
+
+  const makeHomes = Effect.fn("AgentSessionScanner.test.makePiHomes")(function* () {
+    return {
+      claudeHomePath: yield* makeTempDir("t3code-pi-claude-"),
+      codexHomePath: yield* makeTempDir("t3code-pi-codex-"),
+      piAgentDir: yield* makeTempDir("t3code-pi-agent-"),
+      workspace: yield* makeTempDir("t3code-pi-workspace-"),
+    };
+  });
+
+  const piInstances = (piAgentDir: string): ContractServerSettings["providerInstances"] => ({
+    [ProviderInstanceId.make("pi")]: {
+      driver: ProviderDriverKind.make("pi"),
+      enabled: true,
+      environment: [{ name: "PI_CODING_AGENT_DIR", value: piAgentDir, sensitive: false }],
+      config: {},
+    } as never,
+  });
+
+  it.effect("lists Pi sessions by cwd, ignoring subagents and foreign paths", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      yield* TestClock.setTime(nowMs);
+      const homes = yield* makeHomes();
+      const folder = path.join(homes.piAgentDir, "sessions", "--workspace--");
+      yield* writeTranscript({
+        filePath: path.join(folder, "2026-10-06T10-00-00-000Z_a.jsonl"),
+        contents: piSession({ id: "pi-a", cwd: homes.workspace }),
+        mtimeMs: nowMs - 60 * 60 * 1000,
+      });
+      yield* writeTranscript({
+        filePath: path.join(folder, "subagents", "run", "b1", "run-0", "session.jsonl"),
+        contents: piSession({ id: "pi-sub", cwd: homes.workspace }),
+        mtimeMs: nowMs - 60 * 60 * 1000,
+      });
+      yield* writeTranscript({
+        filePath: path.join(homes.piAgentDir, "sessions", "--F--x--", "2026-10-06_w.jsonl"),
+        contents: piSession({ id: "pi-windows", cwd: "F:\\explore\\x" }),
+        mtimeMs: nowMs - 60 * 60 * 1000,
+      });
+
+      const result = yield* runScan({ ...homes, providerInstances: piInstances(homes.piAgentDir) });
+
+      expect(result.candidates).toEqual([
+        expect.objectContaining({ path: homes.workspace, sources: ["pi"], threadCount: 1 }),
+      ]);
+    }),
+  );
+
+  it.effect("imports the resumed branch with the session_info title", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      yield* TestClock.setTime(nowMs);
+      const homes = yield* makeHomes();
+      const folder = path.join(homes.piAgentDir, "sessions", "--workspace--");
+      const named = path.join(folder, "2026-10-06T10-00-00-000Z_named.jsonl");
+      yield* writeTranscript({
+        filePath: named,
+        contents: piSession({
+          id: "pi-named",
+          cwd: homes.workspace,
+          name: "BOL-1 INVESTIGATE: Deck",
+        }),
+        mtimeMs: nowMs - 60 * 60 * 1000,
+      });
+      yield* writeTranscript({
+        filePath: path.join(folder, "2026-10-06T10-00-00-000Z_untitled.jsonl"),
+        contents: piSession({ id: "pi-untitled", cwd: homes.workspace }),
+        mtimeMs: nowMs - 2 * 60 * 60 * 1000,
+      });
+      yield* writeTranscript({
+        filePath: path.join(folder, "2026-10-06T10-00-00-000Z_child.jsonl"),
+        contents: piSession({
+          id: "pi-child",
+          cwd: homes.workspace,
+          firstPrompt: "Parent agent: LunarFalcon\n\nDo the subtask",
+        }),
+        mtimeMs: nowMs - 3 * 60 * 60 * 1000,
+      });
+      // Still being written by a running pi.
+      yield* writeTranscript({
+        filePath: path.join(folder, "2026-10-06T10-00-00-000Z_live.jsonl"),
+        contents: piSession({ id: "pi-live", cwd: homes.workspace }),
+        mtimeMs: nowMs - 30 * 1000,
+      });
+
+      const outcomes = yield* runRecentThreadOutcomes({
+        ...homes,
+        providerInstances: piInstances(homes.piAgentDir),
+        workspaceRoot: homes.workspace,
+      });
+
+      expect(outcomes.map((outcome) => outcome._tag)).toEqual([
+        "Importable",
+        "Importable",
+        "Skipped",
+      ]);
+      const imported = outcomes.flatMap((outcome) =>
+        outcome._tag === "Importable" ? [outcome] : [],
+      );
+      expect(imported[0]?.source).toMatchObject({
+        provider: "pi",
+        providerSessionId: "pi-named",
+        filePath: named,
+      });
+      expect(imported[0]?.thread).toMatchObject({
+        source: "pi",
+        providerSessionId: "pi-named",
+        title: "BOL-1 INVESTIGATE: Deck",
+        model: null,
+        messages: [
+          { role: "user", text: "Triage the ticket", createdAt: "2026-10-06T10:00:01.000Z" },
+          { role: "assistant", text: "Final answer", createdAt: "2026-10-06T10:00:04.000Z" },
+        ],
+      });
+      expect(imported[1]?.thread.title).toBe("Triage the ticket");
+    }),
+  );
+});
