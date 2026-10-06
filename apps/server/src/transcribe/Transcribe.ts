@@ -20,14 +20,21 @@ import * as ProcessRunner from "../processRunner.ts";
  *
  * The browser records a short clip (webm/opus, mp4/aac, ...) and posts it as
  * the multipart field `audio`. The clip is normalized to 16 kHz mono wav with
- * ffmpeg and sent to ElevenLabs Scribe. Audio and keys are never logged.
+ * ffmpeg and sent to the configured provider: a local OpenAI-compatible
+ * speech-to-text server (e.g. Parakeet on 127.0.0.1) or ElevenLabs Scribe.
+ * Audio, transcripts and keys are never logged.
  *
  * Environment (read per request, so the service EnvironmentFile applies):
- * - ELEVENLABS_API_KEY   enables the ElevenLabs provider
- * - TRANSCRIBE_MODEL     ElevenLabs model id, default scribe_v2
- * - TRANSCRIBE_LANGUAGE  optional language_code (e.g. "en"); auto-detect when unset
- * - TRANSCRIBE_PROVIDER  optional; only "elevenlabs" is supported
- * - TRANSCRIBE_FFMPEG    optional ffmpeg path, default "ffmpeg" from PATH
+ * - TRANSCRIBE_PROVIDER   optional "local" | "elevenlabs"; default: local when
+ *                         TRANSCRIBE_LOCAL_URL is set, else elevenlabs when a key is set
+ * - TRANSCRIBE_LOCAL_URL  base URL of the local server; the clip goes to
+ *                         `${url}/v1/audio/transcriptions` (multipart `file`, `language`)
+ * - TRANSCRIBE_FALLBACK   optional "elevenlabs": retry with ElevenLabs when the local
+ *                         call fails and ELEVENLABS_API_KEY is set; off by default
+ * - ELEVENLABS_API_KEY    enables the ElevenLabs provider
+ * - TRANSCRIBE_MODEL      ElevenLabs model id, default scribe_v2
+ * - TRANSCRIBE_LANGUAGE   optional language (e.g. "en"); auto-detect when unset
+ * - TRANSCRIBE_FFMPEG     optional ffmpeg path, default "ffmpeg" from PATH
  */
 
 export const TRANSCRIBE_ROUTE_PATH = "/api/transcribe";
@@ -35,19 +42,32 @@ export const TRANSCRIBE_MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 const FFMPEG_TIMEOUT = "60 seconds";
 const PROVIDER_TIMEOUT = "90 seconds";
+// CPU models run at roughly 0.15-0.25x real time, so allow long clips more time.
+const LOCAL_PROVIDER_TIMEOUT = "300 seconds";
 const ELEVENLABS_SPEECH_TO_TEXT_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+const LOCAL_TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions";
 const DEFAULT_ELEVENLABS_MODEL = "scribe_v2";
 export const NO_TRANSCRIPTION_PROVIDER_MESSAGE = "no transcription provider configured";
 
 export type TranscriptionEnv = Readonly<Record<string, string | undefined>>;
 
+export interface ElevenLabsProviderConfig {
+  readonly kind: "elevenlabs";
+  readonly apiKey: string;
+  readonly model: string;
+  readonly language: string | undefined;
+}
+
+export interface LocalProviderConfig {
+  readonly kind: "local";
+  readonly url: string;
+  readonly language: string | undefined;
+  readonly fallback: ElevenLabsProviderConfig | undefined;
+}
+
 export type TranscriptionProviderConfig =
-  | {
-      readonly kind: "elevenlabs";
-      readonly apiKey: string;
-      readonly model: string;
-      readonly language: string | undefined;
-    }
+  | ElevenLabsProviderConfig
+  | LocalProviderConfig
   | { readonly kind: "none"; readonly reason: string };
 
 const nonEmpty = (value: string | undefined): string | undefined => {
@@ -57,19 +77,31 @@ const nonEmpty = (value: string | undefined): string | undefined => {
 
 export function resolveTranscriptionProvider(env: TranscriptionEnv): TranscriptionProviderConfig {
   const forced = nonEmpty(env.TRANSCRIBE_PROVIDER)?.toLowerCase();
-  if (forced !== undefined && forced !== "elevenlabs") {
+  if (forced !== undefined && forced !== "elevenlabs" && forced !== "local") {
     return { kind: "none", reason: `transcription provider "${forced}" is not supported` };
   }
+  const language = nonEmpty(env.TRANSCRIBE_LANGUAGE);
   const apiKey = nonEmpty(env.ELEVENLABS_API_KEY);
-  if (apiKey === undefined) {
-    return { kind: "none", reason: NO_TRANSCRIPTION_PROVIDER_MESSAGE };
+  const elevenLabs: ElevenLabsProviderConfig | undefined =
+    apiKey === undefined
+      ? undefined
+      : {
+          kind: "elevenlabs",
+          apiKey,
+          model: nonEmpty(env.TRANSCRIBE_MODEL) ?? DEFAULT_ELEVENLABS_MODEL,
+          language,
+        };
+  const localUrl = nonEmpty(env.TRANSCRIBE_LOCAL_URL)?.replace(/\/+$/, "");
+
+  if (forced === "local" || (forced === undefined && localUrl !== undefined)) {
+    if (localUrl === undefined) {
+      return { kind: "none", reason: "TRANSCRIBE_LOCAL_URL is not set" };
+    }
+    const fallback =
+      nonEmpty(env.TRANSCRIBE_FALLBACK)?.toLowerCase() === "elevenlabs" ? elevenLabs : undefined;
+    return { kind: "local", url: localUrl, language, fallback };
   }
-  return {
-    kind: "elevenlabs",
-    apiKey,
-    model: nonEmpty(env.TRANSCRIBE_MODEL) ?? DEFAULT_ELEVENLABS_MODEL,
-    language: nonEmpty(env.TRANSCRIBE_LANGUAGE),
-  };
+  return elevenLabs ?? { kind: "none", reason: NO_TRANSCRIPTION_PROVIDER_MESSAGE };
 }
 
 class TranscribeRequestError extends Data.TaggedError("TranscribeRequestError")<{
@@ -98,7 +130,8 @@ const multipartFailure = (error: Multipart.MultipartError) => {
   }
 };
 
-const ElevenLabsResponse = Schema.Struct({ text: Schema.optional(Schema.String) });
+/** Both ElevenLabs and OpenAI-compatible servers answer `{ text }`. */
+const TranscriptResponse = Schema.Struct({ text: Schema.optional(Schema.String) });
 
 const readAudioUpload = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -208,7 +241,7 @@ const normalizeToWav = Effect.fn("transcribe.normalizeToWav")(function* (
 
 const transcribeWithElevenLabs = Effect.fn("transcribe.elevenlabs")(function* (
   wav: Uint8Array,
-  provider: Extract<TranscriptionProviderConfig, { kind: "elevenlabs" }>,
+  provider: ElevenLabsProviderConfig,
 ) {
   const httpClient = yield* HttpClient.HttpClient;
   const form = new FormData();
@@ -243,11 +276,81 @@ const transcribeWithElevenLabs = Effect.fn("transcribe.elevenlabs")(function* (
     });
     return yield* providerFailure(`transcription provider returned HTTP ${response.status}`);
   }
-  const body = yield* HttpClientResponse.schemaBodyJson(ElevenLabsResponse)(response).pipe(
+  const body = yield* HttpClientResponse.schemaBodyJson(TranscriptResponse)(response).pipe(
     Effect.mapError(() => providerFailure("transcription provider returned an invalid response")),
   );
   return (body.text ?? "").trim();
 });
+
+/** OpenAI-compatible `POST /v1/audio/transcriptions` on a local server (no auth). */
+const transcribeWithLocal = Effect.fn("transcribe.local")(function* (
+  wav: Uint8Array,
+  provider: LocalProviderConfig,
+) {
+  const httpClient = yield* HttpClient.HttpClient;
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "audio.wav");
+  if (provider.language !== undefined) {
+    form.append("language", provider.language);
+  }
+  const providerFailure = (message: string) => new TranscribeRequestError({ status: 502, message });
+
+  const response = yield* httpClient
+    .execute(
+      HttpClientRequest.post(`${provider.url}${LOCAL_TRANSCRIPTIONS_PATH}`).pipe(
+        HttpClientRequest.bodyFormData(form),
+      ),
+    )
+    .pipe(
+      Effect.timeout(LOCAL_PROVIDER_TIMEOUT),
+      Effect.tapError((error) =>
+        Effect.logWarning("Dictation provider request failed", {
+          provider: "local",
+          reason: error._tag,
+        }),
+      ),
+      Effect.mapError(() => providerFailure("local transcription server request failed")),
+    );
+  if (response.status < 200 || response.status >= 300) {
+    yield* Effect.logWarning("Dictation provider returned an error status", {
+      provider: "local",
+      status: response.status,
+    });
+    return yield* providerFailure(`local transcription server returned HTTP ${response.status}`);
+  }
+  const body = yield* HttpClientResponse.schemaBodyJson(TranscriptResponse)(response).pipe(
+    Effect.mapError(() =>
+      providerFailure("local transcription server returned an invalid response"),
+    ),
+  );
+  return (body.text ?? "").trim();
+});
+
+const transcribeWithProvider = (
+  wav: Uint8Array,
+  provider: ElevenLabsProviderConfig | LocalProviderConfig,
+) => {
+  if (provider.kind === "elevenlabs") {
+    return transcribeWithElevenLabs(wav, provider).pipe(
+      Effect.map((text) => ({ text, provider: "elevenlabs" as const })),
+    );
+  }
+  const local = transcribeWithLocal(wav, provider).pipe(
+    Effect.map((text) => ({ text, provider: "local" as const })),
+  );
+  const fallback = provider.fallback;
+  if (fallback === undefined) {
+    return local;
+  }
+  return local.pipe(
+    Effect.catchTag("TranscribeRequestError", () =>
+      Effect.logWarning("Local transcription failed; falling back to ElevenLabs").pipe(
+        Effect.andThen(transcribeWithElevenLabs(wav, fallback)),
+        Effect.map((text) => ({ text, provider: "elevenlabs" as const })),
+      ),
+    ),
+  );
+};
 
 /**
  * Handles POST /api/transcribe after authentication. Returns `{ text, provider }`
@@ -263,12 +366,13 @@ export const handleTranscribeRequest = (readEnv: () => TranscriptionEnv = () => 
     const ffmpegCommand = nonEmpty(env.TRANSCRIBE_FFMPEG) ?? "ffmpeg";
     const inputPath = yield* readAudioUpload;
     const wav = yield* normalizeToWav(inputPath, ffmpegCommand);
-    const text = yield* transcribeWithElevenLabs(wav, provider).pipe(
-      // The provider request carries the API key header; keep it out of traces.
+    const result = yield* transcribeWithProvider(wav, provider).pipe(
+      // The ElevenLabs request (direct or as fallback) carries the API key header;
+      // keep every provider request out of traces.
       Effect.withTracerEnabled(false),
     );
     return HttpServerResponse.jsonUnsafe(
-      { text, provider: provider.kind },
+      { text: result.text, provider: result.provider },
       { headers: { "cache-control": "no-store" } },
     );
   }).pipe(

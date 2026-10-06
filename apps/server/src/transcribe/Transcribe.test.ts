@@ -43,6 +43,55 @@ describe("resolveTranscriptionProvider", () => {
     });
   });
 
+  it("defaults to the local server when TRANSCRIBE_LOCAL_URL is set", () => {
+    expect(
+      resolveTranscriptionProvider({
+        ELEVENLABS_API_KEY: "k",
+        TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178/",
+        TRANSCRIBE_LANGUAGE: "en",
+      }),
+    ).toEqual({
+      kind: "local",
+      url: "http://127.0.0.1:8178",
+      language: "en",
+      fallback: undefined,
+    });
+  });
+
+  it("uses ElevenLabs when forced even if a local URL is set", () => {
+    expect(
+      resolveTranscriptionProvider({
+        ELEVENLABS_API_KEY: "k",
+        TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178",
+        TRANSCRIBE_PROVIDER: "elevenlabs",
+      }),
+    ).toMatchObject({ kind: "elevenlabs", apiKey: "k" });
+  });
+
+  it("reports a forced local provider without a URL", () => {
+    expect(
+      resolveTranscriptionProvider({ ELEVENLABS_API_KEY: "k", TRANSCRIBE_PROVIDER: "local" }),
+    ).toEqual({ kind: "none", reason: "TRANSCRIBE_LOCAL_URL is not set" });
+  });
+
+  it("enables the ElevenLabs fallback only when asked and a key exists", () => {
+    const base = { TRANSCRIBE_PROVIDER: "local", TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178" };
+    expect(resolveTranscriptionProvider({ ...base, ELEVENLABS_API_KEY: "k" })).toMatchObject({
+      kind: "local",
+      fallback: undefined,
+    });
+    expect(
+      resolveTranscriptionProvider({
+        ...base,
+        ELEVENLABS_API_KEY: "k",
+        TRANSCRIBE_FALLBACK: "ElevenLabs",
+      }),
+    ).toMatchObject({ kind: "local", fallback: { kind: "elevenlabs", apiKey: "k" } });
+    expect(
+      resolveTranscriptionProvider({ ...base, TRANSCRIBE_FALLBACK: "elevenlabs" }),
+    ).toMatchObject({ kind: "local", fallback: undefined });
+  });
+
   it("rejects providers it does not implement", () => {
     expect(
       resolveTranscriptionProvider({ ELEVENLABS_API_KEY: "k", TRANSCRIBE_PROVIDER: "openrouter" }),
@@ -61,6 +110,8 @@ const makeHandler = (
     readonly ffmpegExitCode?: number;
     readonly providerStatus?: number;
     readonly providerBody?: unknown;
+    readonly localStatus?: number;
+    readonly localBody?: unknown;
   } = {},
 ) => {
   const harness: Harness = { ffmpegCalls: [], providerRequests: [] };
@@ -87,12 +138,12 @@ const makeHandler = (
   const httpClient = HttpClient.make((request) =>
     Effect.sync(() => {
       harness.providerRequests.push(request);
-      return HttpClientResponse.fromWeb(
-        request,
-        Response.json(options.providerBody ?? { text: "  hello world  " }, {
-          status: options.providerStatus ?? 200,
-        }),
-      );
+      const isLocal = request.url.startsWith("http://127.0.0.1:8178");
+      const body = isLocal
+        ? (options.localBody ?? { text: "  local words  " })
+        : (options.providerBody ?? { text: "  hello world  " });
+      const status = isLocal ? (options.localStatus ?? 200) : (options.providerStatus ?? 200);
+      return HttpClientResponse.fromWeb(request, Response.json(body, { status }));
     }),
   );
   const routeLayer = HttpRouter.add(
@@ -139,6 +190,71 @@ describe("POST /api/transcribe", () => {
         expect(providerRequest.body.formData.get("language_code")).toBe("en");
         expect(providerRequest.body.formData.get("file")).toBeInstanceOf(Blob);
       }
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("posts the normalized wav to the local server", async () => {
+    const { handler, dispose, harness } = makeHandler({
+      ELEVENLABS_API_KEY: "test-key",
+      TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178",
+      TRANSCRIBE_LANGUAGE: "en",
+    });
+    try {
+      const response = await handler(audioRequest());
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ text: "local words", provider: "local" });
+
+      expect(harness.ffmpegCalls).toHaveLength(1);
+      expect(harness.providerRequests).toHaveLength(1);
+      const localRequest = harness.providerRequests[0]!;
+      expect(localRequest.url).toBe("http://127.0.0.1:8178/v1/audio/transcriptions");
+      expect(localRequest.headers["xi-api-key"]).toBeUndefined();
+      expect(localRequest.body._tag).toBe("FormData");
+      if (localRequest.body._tag === "FormData") {
+        expect(localRequest.body.formData.get("file")).toBeInstanceOf(Blob);
+        expect(localRequest.body.formData.get("language")).toBe("en");
+      }
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("maps local server errors to 502 without falling back by default", async () => {
+    const { handler, dispose, harness } = makeHandler(
+      { ELEVENLABS_API_KEY: "k", TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178" },
+      { localStatus: 500, localBody: { detail: "model exploded" } },
+    );
+    try {
+      const response = await handler(audioRequest());
+      expect(response.status).toBe(502);
+      const body = await response.text();
+      expect(body).toContain("HTTP 500");
+      expect(body).not.toContain("exploded");
+      expect(harness.providerRequests).toHaveLength(1);
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("falls back to ElevenLabs when enabled and the local server fails", async () => {
+    const { handler, dispose, harness } = makeHandler(
+      {
+        ELEVENLABS_API_KEY: "test-key",
+        TRANSCRIBE_LOCAL_URL: "http://127.0.0.1:8178",
+        TRANSCRIBE_FALLBACK: "elevenlabs",
+      },
+      { localStatus: 503 },
+    );
+    try {
+      const response = await handler(audioRequest());
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ text: "hello world", provider: "elevenlabs" });
+      expect(harness.providerRequests.map((request) => request.url)).toEqual([
+        "http://127.0.0.1:8178/v1/audio/transcriptions",
+        "https://api.elevenlabs.io/v1/speech-to-text",
+      ]);
     } finally {
       await dispose();
     }

@@ -25,6 +25,37 @@ export function isDictationSupported(): boolean {
   );
 }
 
+/**
+ * Raw-ish capture for speech-to-text: browser echo cancellation, noise
+ * suppression and gain control tend to smear consonants the model needs.
+ */
+export const DICTATION_AUDIO_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 1,
+  },
+};
+
+/**
+ * Opens the microphone with {@link DICTATION_AUDIO_CONSTRAINTS}, retrying with
+ * `{ audio: true }` when the browser rejects those constraints. A denied
+ * permission is rethrown as is, so the user is not prompted twice.
+ */
+export async function openDictationMicrophone(
+  getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream> = (constraints) =>
+    navigator.mediaDevices.getUserMedia(constraints),
+): Promise<MediaStream> {
+  try {
+    return await getUserMedia(DICTATION_AUDIO_CONSTRAINTS);
+  } catch (error) {
+    const name = error instanceof DOMException ? error.name : "";
+    if (name === "NotAllowedError" || name === "SecurityError") throw error;
+    return await getUserMedia({ audio: true });
+  }
+}
+
 /** First container the browser can record; Safari/iOS lands on audio/mp4. */
 export function pickRecorderMimeType(
   isTypeSupported: (mimeType: string) => boolean = (mimeType) =>
