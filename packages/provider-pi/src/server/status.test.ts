@@ -105,6 +105,40 @@ const settings = {
 } as const;
 
 describe("PiProvider", () => {
+  it.effect("labels models by Pi provider and groups them without changing slugs", () =>
+    Effect.gen(function* () {
+      const spawner = yield* piDiscoverySpawner({
+        models: [
+          { provider: "openai-codex", id: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
+          { provider: "claude-bridge", id: "claude-opus-5", name: "Claude Opus 5" },
+          { provider: "openrouter", id: "openai/gpt-sol", name: "OpenAI: GPT Sol Latest" },
+          { provider: "openai-codex", id: "gpt-6.1-luna", name: "GPT-6.1 Luna" },
+          { provider: "anthropic", id: "claude-opus-5", name: "Claude Opus 5" },
+          { provider: "opencode-go", id: "kimi", name: "Kimi" },
+          { provider: "xai", id: "grok-5", name: "Grok 5" },
+          { provider: "nano-gpt", id: "unnamed-model" },
+        ],
+      });
+      const snapshot = yield* checkPiProviderStatus(settings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+      assert.deepEqual(
+        snapshot.models.map((model) => [model.slug, model.name]),
+        [
+          ["default", "Pi default"],
+          ["openai-codex/gpt-6.1-sol", "Codex · GPT-6.1 Sol"],
+          ["openai-codex/gpt-6.1-luna", "Codex · GPT-6.1 Luna"],
+          ["claude-bridge/claude-opus-5", "Claude · Claude Opus 5"],
+          ["openrouter/openai/gpt-sol", "OpenRouter · OpenAI: GPT Sol Latest"],
+          ["anthropic/claude-opus-5", "Anthropic · Claude Opus 5"],
+          ["opencode-go/kimi", "OpenCode Go · Kimi"],
+          ["xai/grok-5", "xAI · Grok 5"],
+          ["nano-gpt/unnamed-model", "nano-gpt · unnamed-model"],
+        ],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("requires the first published Pi version with entries and settlement hooks", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkPiProviderStatus(settings).pipe(

@@ -87,6 +87,30 @@ function piModelsFromSettings(
   );
 }
 
+/**
+ * Short labels for the Pi providers a model comes from. One Pi instance can
+ * expose the same model name through several providers (a subscription, an
+ * API key, a router), so the picker label carries the provider. Display only:
+ * slugs stay `<provider>/<id>`.
+ */
+const PI_PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  "openai-codex": "Codex",
+  "claude-bridge": "Claude",
+  anthropic: "Anthropic",
+  openrouter: "OpenRouter",
+  "opencode-go": "OpenCode Go",
+  xai: "xAI",
+};
+
+export function piProviderLabel(provider: string): string {
+  return Object.hasOwn(PI_PROVIDER_LABELS, provider) ? PI_PROVIDER_LABELS[provider]! : provider;
+}
+
+function piModelDisplayName(provider: string, name: string): string {
+  const prefix = `${piProviderLabel(provider)} · `;
+  return name.startsWith(prefix) ? name : `${prefix}${name}`;
+}
+
 function parseDiscoveredModels(
   data: unknown,
   state: unknown,
@@ -101,7 +125,9 @@ function parseDiscoveredModels(
   const activeProvider = recordString(activeModel, "provider");
   const activeModelId = recordString(activeModel, "id");
   const seen = new Set<string>();
-  const parsed: Array<ServerProviderModel> = [];
+  // Grouped by provider in first-seen order, keeping Pi's order within each
+  // provider; the picker preserves server order inside an instance.
+  const byProvider = new Map<string, Array<ServerProviderModel>>();
   for (const model of models) {
     const provider = recordString(model, "provider");
     const id = recordString(model, "id");
@@ -113,9 +139,14 @@ function parseDiscoveredModels(
     const slug = `${provider}/${id}`;
     if (seen.has(slug)) continue;
     seen.add(slug);
-    parsed.push({
+    let group = byProvider.get(provider);
+    if (group === undefined) {
+      group = [];
+      byProvider.set(provider, group);
+    }
+    group.push({
       slug,
-      name: recordString(model, "name") ?? slug,
+      name: piModelDisplayName(provider, recordString(model, "name") ?? id),
       subProvider: provider,
       isCustom: false,
       capabilities: thinkingCapabilitiesForPiModel(
@@ -126,7 +157,7 @@ function parseDiscoveredModels(
       ),
     });
   }
-  return Result.succeed(parsed);
+  return Result.succeed([...byProvider.values()].flat());
 }
 
 const makePiDiscoveryConnection = Effect.fnUntraced(function* (

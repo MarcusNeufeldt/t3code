@@ -219,8 +219,9 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
           [
             ["default", []],
             ["test/model", known ? ["high"] : []],
-            ["other/model", []],
+            // Devbox: models are grouped by Pi provider (first-seen order).
             ["test/other", []],
+            ["other/model", []],
           ],
         );
       }).pipe(Effect.scoped),
