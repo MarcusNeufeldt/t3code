@@ -100,6 +100,7 @@ import {
 } from "../../composerDraftStore";
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
+import { ComposerDictationButton } from "./ComposerDictationButton";
 import { useComposerTriggerState } from "./useComposerTriggerState";
 import { useComposerMenuItems } from "./useComposerMenuItems";
 import { useComposerFocusState } from "./useComposerFocusState";
@@ -2598,6 +2599,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   };
   const insertComposerTextStable = useStableCallback(insertComposerText);
+  const insertDictatedText = (text: string) =>
+    insertComposerText(text, "cursor", { ensureLeadingBoundary: true });
+  const insertDictatedTextStable = useStableCallback(insertDictatedText);
 
   const insertAttachmentReferences = (
     references: ReadonlyArray<ComposerContextReference>,
@@ -3772,6 +3776,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  <ComposerDictationButton
+                    disabled={isConnecting}
+                    onTranscript={insertDictatedTextStable}
+                  />
                   {composerAttachButton}
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}

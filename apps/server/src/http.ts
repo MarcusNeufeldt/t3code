@@ -54,6 +54,8 @@ import {
   browserApiCorsAllowedMethods,
   DESKTOP_RENDERER_ORIGINS,
 } from "./httpCors.ts";
+import * as ProcessRunner from "./processRunner.ts";
+import { handleTranscribeRequest, TRANSCRIBE_ROUTE_PATH } from "./transcribe/Transcribe.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -379,6 +381,23 @@ export const layerOtlpTracesProxyRoute = HttpRouter.add(
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),
+  ),
+);
+
+// Composer dictation: multipart `audio` in, `{ text, provider }` out. Mutating
+// and billable, so it needs the same operate scope as the other raw routes.
+export const layerTranscribeRoute = HttpRouter.add(
+  "POST",
+  TRANSCRIBE_ROUTE_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+    return yield* handleTranscribeRequest().pipe(Effect.provide(ProcessRunner.layer));
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
   ),
 );
 
