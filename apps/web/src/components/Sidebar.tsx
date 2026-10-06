@@ -2094,7 +2094,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           sortable?.isDragging && "relative z-20",
         )}
       >
-        <Tooltip disabled={sortable?.isDragging}>
+        <Tooltip disabled={snoozeMenuOpen || sortable?.isDragging}>
           <TooltipTrigger
             render={
               <div
@@ -2123,16 +2123,46 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             >
               {props.project ? <ProjectFavicon project={props.project} className="size-4" /> : null}
             </span>
+            <SidebarProviderStack
+              thread={thread}
+              providerEntryByInstanceId={props.providerEntryByInstanceId}
+            />
             {draftIndicator}
             {title}
             {pinIndicator}
             {terminalStatusIcon}
+            {/* Live status (Working, Approval, Input, Failed, Done) stays visible
+              on the compact row. Woke has its own pill in the time slot. */}
+            {topStatus && !isWokeStatus ? (
+              <span
+                role="status"
+                className={cn("shrink-0 text-xs font-medium", topStatus.className)}
+              >
+                {topStatus.label}
+              </span>
+            ) : null}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
                 Regenerating title
               </span>
             ) : null}
             {prBadge}
+            {showSnoozeButton ? (
+              <span
+                className={cn(
+                  "inline-flex h-6 shrink-0 items-center",
+                  !snoozeMenuOpen &&
+                    "opacity-0 focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100",
+                )}
+              >
+                <SnoozeMenuButton
+                  open={snoozeMenuOpen}
+                  onOpenChange={setSnoozeMenuOpen}
+                  onSnooze={handleSnoozePreset}
+                  timestampFormat={props.timestampFormat}
+                />
+              </span>
+            ) : null}
             {sortable?.isDragging ? (
               dragDestination
             ) : (
@@ -4790,9 +4820,10 @@ export default function Sidebar() {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
-                        const isCard =
-                          section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = isCard ? "card" : "slim";
+                        // devbox: every row is the compact 36px row. The slim row
+                        // carries the provider badge, live status label and
+                        // snooze control the card used to add.
+                        const rowVariant = "slim" as const;
                         return (
                           <SortableThreadRow
                             key={threadKey}
