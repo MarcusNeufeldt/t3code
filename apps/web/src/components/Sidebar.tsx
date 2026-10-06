@@ -2953,9 +2953,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
-                        const isCard =
-                          section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = isCard ? "card" : "slim";
+                        // devbox: every row is the compact 36px row. The slim row
+                        // carries the provider badge, live status label and
+                        // snooze control the card used to add.
+                        const rowVariant = "slim" as const;
                         return (
                           <SortableThreadRow
                             key={threadKey}
