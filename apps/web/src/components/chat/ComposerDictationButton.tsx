@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   isDictationSupported,
+  openDictationMicrophone,
   pickRecorderMimeType,
   transcribeRecording,
 } from "../../lib/dictation";
@@ -97,7 +98,7 @@ export const ComposerDictationButton = memo(function ComposerDictationButton(pro
     setPhase("starting");
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await openDictationMicrophone();
     } catch (error) {
       setPhase("idle");
       toastManager.add({
