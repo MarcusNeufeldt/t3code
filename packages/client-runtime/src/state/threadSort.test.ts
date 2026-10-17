@@ -235,6 +235,27 @@ describe("generateSpreadPinOrderKeys", () => {
 });
 
 describe("sortActiveThreadsByOrderKey", () => {
+  it("orders unarranged threads by their latest message or run activity", () => {
+    const sorted = sortActiveThreadsByOrderKey([
+      { id: "newer-but-quiet", createdAt: "2026-03-09T11:00:00.000Z" },
+      {
+        id: "older-with-a-new-message",
+        createdAt: "2026-03-01T09:00:00.000Z",
+        latestUserMessageAt: "2026-03-09T12:00:00.000Z",
+      },
+      {
+        id: "older-with-a-finished-run",
+        createdAt: "2026-03-01T08:00:00.000Z",
+        latestRun: { requestedAt: null, startedAt: null, completedAt: "2026-03-09T13:00:00.000Z" },
+      },
+    ]);
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      "older-with-a-finished-run",
+      "older-with-a-new-message",
+      "newer-but-quiet",
+    ]);
+  });
+
   it("keeps new and reopened threads ahead of the saved order", () => {
     const sorted = sortActiveThreadsByOrderKey([
       {
