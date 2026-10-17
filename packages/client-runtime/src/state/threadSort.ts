@@ -113,13 +113,25 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
+// Devbox: active threads order by last activity (message or run), not only by
+// created/unsettled time as upstream does.
 export function activeThreadAnchorTimestampMs(thread: {
   readonly createdAt: string;
   readonly unsettledAt?: string | null | undefined;
+  readonly latestUserMessageAt?: string | null | undefined;
+  readonly latestRun?: {
+    readonly requestedAt?: string | null | undefined;
+    readonly startedAt?: string | null | undefined;
+    readonly completedAt?: string | null | undefined;
+  } | null;
 }): number {
   return Math.max(
     toSortableTimestamp(thread.createdAt) ?? 0,
     toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
+    toSortableTimestamp(thread.latestUserMessageAt ?? undefined) ?? 0,
+    toSortableTimestamp(thread.latestRun?.requestedAt ?? undefined) ?? 0,
+    toSortableTimestamp(thread.latestRun?.startedAt ?? undefined) ?? 0,
+    toSortableTimestamp(thread.latestRun?.completedAt ?? undefined) ?? 0,
   );
 }
 
@@ -300,6 +312,12 @@ export function sortActiveThreadsByOrderKey<
     readonly id: string;
     readonly createdAt: string;
     readonly unsettledAt?: string | null | undefined;
+    readonly latestUserMessageAt?: string | null | undefined;
+    readonly latestRun?: {
+      readonly requestedAt?: string | null | undefined;
+      readonly startedAt?: string | null | undefined;
+      readonly completedAt?: string | null | undefined;
+    } | null;
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;
   },

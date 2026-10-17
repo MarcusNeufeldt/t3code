@@ -26,6 +26,17 @@ describe("activeThreadAnchorTimestampMs", () => {
       }),
     ).toBe(Date.parse("2026-08-01T00:00:00.000Z"));
   });
+
+  it("uses the latest message or run activity when it is newer", () => {
+    expect(
+      activeThreadAnchorTimestampMs({
+        createdAt: "2026-01-01T00:00:00.000Z",
+        unsettledAt: null,
+        latestUserMessageAt: "2026-09-01T00:00:00.000Z",
+        latestRun: { requestedAt: null, startedAt: null, completedAt: "2026-09-02T00:00:00.000Z" },
+      }),
+    ).toBe(Date.parse("2026-09-02T00:00:00.000Z"));
+  });
 });
 
 type TestThread = { readonly id: string } & ThreadSortInput;
