@@ -222,6 +222,7 @@ import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrom
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
+import { isPiThread, openThreadInTerminal } from "../devboxTerminal";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
@@ -2398,6 +2399,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               canShareWithGuest: appAtomRegistry.get(
                 canShareWithGuestAtom(threadRef.environmentId),
               ),
+              canOpenInTerminal: isPiThread(thread),
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -2538,6 +2540,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
+            return;
+          case "open-in-terminal":
+            void openThreadInTerminal(thread.id);
             return;
           case "archive": {
             if (confirmThreadArchive) {

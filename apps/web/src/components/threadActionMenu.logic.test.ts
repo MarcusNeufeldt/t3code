@@ -65,6 +65,24 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
 
+  it("offers Open in Windows Terminal only for Pi threads, also to read-only clients", () => {
+    expect(
+      buildThreadActionMenuItems(baseState).some((item) => item.id === "open-in-terminal"),
+    ).toBe(false);
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      canOpenInTerminal: true,
+    });
+    const copyIndex = items.findIndex((item) => item.id === "copy");
+    expect(items[copyIndex + 1]).toMatchObject({
+      id: "open-in-terminal",
+      label: "Open in Windows Terminal",
+      icon: "terminal",
+    });
+    expect(items[copyIndex + 1]?.disabled).toBeFalsy();
+  });
+
   it("disables archive while the thread is running", () => {
     const archiveItem = buildThreadActionMenuItems({ ...baseState, isRunning: true }).find(
       (item) => item.id === "archive",
