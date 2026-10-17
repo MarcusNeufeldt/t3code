@@ -551,6 +551,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       let appliedSessionName: string | null = null;
       const outOfTurnExtensionErrors: Array<PiRpcRecord> = [];
       let lastKnownLeaf: string | null = null;
+      /** Devbox: session file size when `lastKnownLeaf` last matched it (see reloadIfExtendedExternally). */
+      let syncedSessionBytes: number | null = null;
       // Failed get_entries leaves an untrustworthy turn boundary; re-sync the cursor on next capture.
       let leafCursorStale = false;
       // Pi has no unset commands; capture initial defaults so Pi default can replay them.
@@ -1438,6 +1440,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         }
         lastKnownLeaf = listing.leafId;
         leafCursorStale = false;
+        syncedSessionBytes = yield* sessionFileBytes(
+          threadState?.providerThread.nativeThreadRef?.nativeId,
+        );
         const turnStartEntryId = turnWalk.userEntryIds.at(-1);
         // Only a complete acyclic root walk proves all survivors.
         // The old leaf must remain in this tree to prove rewind rather than session replacement.
@@ -2115,6 +2120,79 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         Effect.forkIn(scope),
       );
 
+      const decodeSessionLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+      const sessionFileBytes = (path: string | null | undefined) =>
+        path == null
+          ? Effect.succeed(null)
+          : fileSystem.stat(path).pipe(
+              Effect.map((info): number | null => Number(info.size)),
+              Effect.orElseSucceed(() => null),
+            );
+
+      /**
+       * Devbox: a terminal Pi (pi-t3) may have extended this session while this process kept
+       * it in memory; prompting now would branch from the stale leaf. Reload only when the file
+       * grew and its new entries descend from the known leaf.
+       */
+      const reloadIfExtendedExternally = Effect.fnUntraced(function* (
+        path: string | null | undefined,
+      ) {
+        if (path == null || syncedSessionBytes === null || lastKnownLeaf === null) return;
+        if (leafCursorStale) return;
+        const bytes = yield* sessionFileBytes(path);
+        if (bytes === null || bytes <= syncedSessionBytes) return;
+        const contents = yield* fileSystem
+          .readFileString(path)
+          .pipe(Effect.orElseSucceed((): string | null => null));
+        if (contents === null) return;
+        const parents = new Map<string, string | null>();
+        let newest: string | null = null;
+        for (const line of contents.split("\n")) {
+          if (line.trim() === "") continue;
+          const decoded = decodeSessionLine(line);
+          if (Option.isNone(decoded)) continue;
+          const entry = decoded.value;
+          const id = recordString(entry, "id");
+          if (id === undefined || recordString(entry, "type") === "session") continue;
+          parents.set(id, recordString(entry, "parentId") ?? null);
+          newest = id;
+        }
+        if (newest === null || newest === lastKnownLeaf) return;
+        const seen = new Set<string>();
+        let current: string | null = newest;
+        while (current !== null && current !== lastKnownLeaf && !seen.has(current)) {
+          seen.add(current);
+          current = parents.get(current) ?? null;
+        }
+        if (current !== lastKnownLeaf) return;
+        const switched = yield* lifecycleRequest({
+          type: "switch_session",
+          sessionPath: path,
+        }).pipe(
+          Effect.map((result) => recordField(result, "cancelled") !== true),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Pi could not reload a session continued elsewhere", {
+              providerSessionId: input.providerSessionId,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (!switched) return;
+        // The reload restores the model and thinking level recorded in the file.
+        appliedModel = null;
+        appliedThinking = null;
+        appliedSessionName = null;
+        const listing = yield* request({ type: "get_entries" }).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        lastKnownLeaf = recordString(listing, "leafId") ?? null;
+        leafCursorStale = listing === undefined;
+        syncedSessionBytes = yield* sessionFileBytes(path);
+        yield* Effect.logInfo("Pi reloaded a session that was continued outside T3", {
+          providerSessionId: input.providerSessionId,
+        });
+      });
+
       const registerThread = Effect.fnUntraced(function* (
         threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput,
         publish = true,
@@ -2232,6 +2310,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           Effect.orElseSucceed(() => undefined),
         );
         lastKnownLeaf = recordString(baselineEntries, "leafId") ?? null;
+        syncedSessionBytes = yield* sessionFileBytes(nativeId);
         leafCursorStale = baselineEntries === undefined;
         if (publish)
           yield* emit({
@@ -2406,6 +2485,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const continuation =
               turnInput.message.createdBy === "agent" &&
               turnInput.message.creationSource === "provider";
+            if (!continuation && pendingWake === null)
+              yield* reloadIfExtendedExternally(state.providerThread.nativeThreadRef?.nativeId);
             if (!continuation) yield* applySelection(turnInput.modelSelection);
             if (turnInput.appThread.title !== appliedSessionName) {
               yield* request({
@@ -2906,6 +2987,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       appliedSessionName = null;
                       lastKnownLeaf = leafId;
                       leafCursorStale = entriesData === undefined;
+                      syncedSessionBytes = yield* sessionFileBytes(forkSessionFile);
                       yield* updateProviderThread(state, {
                         nativeThreadRef: providerRef(forkSessionFile),
                         nativeConversationHeadRef: leafId === null ? null : providerRef(leafId),
