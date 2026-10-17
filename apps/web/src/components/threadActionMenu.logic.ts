@@ -22,6 +22,7 @@ export type ThreadActionMenuId =
   | "copy-path"
   | "copy-branch"
   | "copy-thread-id"
+  | "open-in-terminal"
   | "archive"
   | "delete";
 
@@ -78,6 +79,8 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /** Devbox: Pi threads can open in Windows Terminal on the viewer's PC (t3pi:// handler). */
+  readonly canOpenInTerminal?: boolean;
   readonly supports: {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
@@ -98,6 +101,7 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy-path",
     "copy-branch",
     "copy-thread-id",
+    "open-in-terminal",
   ].includes(action);
 }
 
@@ -204,6 +208,15 @@ export function buildThreadActionMenuItems(
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },
+    ...(state.canOpenInTerminal
+      ? [
+          {
+            id: "open-in-terminal" as const,
+            label: "Open in Windows Terminal",
+            icon: "terminal",
+          },
+        ]
+      : []),
     { id: "project-settings", label: "Project settings", icon: "settings" },
     {
       id: "archive",

@@ -186,6 +186,24 @@ describe("buildThreadActionMenuItems", () => {
     expect(item).toMatchObject({ label: "Regenerating…", disabled: true });
   });
 
+  it("offers Open in Windows Terminal only for Pi threads, also to read-only clients", () => {
+    expect(
+      buildThreadActionMenuItems(baseState).some((item) => item.id === "open-in-terminal"),
+    ).toBe(false);
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      canOpenInTerminal: true,
+    });
+    const copyIndex = items.findIndex((item) => item.id === "copy");
+    expect(items[copyIndex + 1]).toMatchObject({
+      id: "open-in-terminal",
+      label: "Open in Windows Terminal",
+      icon: "terminal",
+    });
+    expect(items[copyIndex + 1]?.disabled).toBeFalsy();
+  });
+
   it("marks delete as destructive and keeps it last", () => {
     const items = buildThreadActionMenuItems({ ...baseState, branch: "main" });
     expect(items.at(-1)).toMatchObject({ id: "delete", destructive: true });
