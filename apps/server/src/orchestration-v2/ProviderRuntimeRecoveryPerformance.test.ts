@@ -23,31 +23,29 @@ import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 
-// Startup recovery cost for restart continuation. The default case is small
-// enough for CI and asserts correctness; T3_BENCH_RECOVERY=1 adds the matrix.
 // `it.live` keeps a real clock: each reconcile gets a fresh command id, so the
 // second recover cannot hide behind command receipt dedup.
 
-const stores = Layer.mergeAll(
+const layerStores = Layer.mergeAll(
   EventStore.layer,
   ProjectionStore.layer,
   EffectOutbox.layer,
   IdAllocator.layer,
-).pipe(Layer.provideMerge(SqlitePersistenceMemory));
-const TestLayer = ProviderRuntimeRecovery.layer.pipe(
-  Layer.provideMerge(EventSink.layer.pipe(Layer.provideMerge(stores))),
+).pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
+const layerTest = ProviderRuntimeRecovery.layer.pipe(
+  Layer.provideMerge(EventSink.layer.pipe(Layer.provideMerge(layerStores))),
   Layer.provideMerge(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
 );
 
@@ -193,8 +191,6 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
     for (let ordinal = 1; ordinal <= ITEMS_PER_SETTLED_THREAD; ordinal += 1) {
       yield* commandItem({ threadId, runId, ordinal, status: "completed" });
     }
-    // ~5% of threads carry a queued follow-up; half are already held, and an
-    // earlier recovery already handled those, so only unheld ones are candidates.
     if (index % 20 === 0) {
       const queueHeld = index % 40 === 0;
       yield* run(threadId, 2, "queued", { queueHeld });
@@ -400,7 +396,6 @@ interface Measurement {
   readonly secondRecoverMs: number;
 }
 
-/** A graceful restart: prepare intent, reconcile on shutdown, recover on boot. */
 const measureGraceful = Effect.fn(function* (scenario: Scenario) {
   const [seeded, seedMs] = yield* timed(seedScenario(scenario));
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -426,7 +421,6 @@ const measureGraceful = Effect.fn(function* (scenario: Scenario) {
   };
 });
 
-/** A crash: no shutdown hook ran, so boot recovery records the continuations. */
 const measureCrash = Effect.fn(function* (scenario: Scenario) {
   yield* seedScenario(scenario);
   const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
@@ -440,8 +434,8 @@ const measureCrash = Effect.fn(function* (scenario: Scenario) {
 });
 
 const measure = Effect.fn(function* (scenario: Scenario) {
-  const graceful = yield* measureGraceful(scenario).pipe(Effect.provide(Layer.fresh(TestLayer)));
-  const crash = yield* measureCrash(scenario).pipe(Effect.provide(Layer.fresh(TestLayer)));
+  const graceful = yield* measureGraceful(scenario).pipe(Effect.provide(Layer.fresh(layerTest)));
+  const crash = yield* measureCrash(scenario).pipe(Effect.provide(Layer.fresh(layerTest)));
   return { ...scenario, ...graceful, ...crash } satisfies Measurement;
 });
 

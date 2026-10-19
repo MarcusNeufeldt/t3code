@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useIsFocused, useNavigation } from "@react-navigation/native";
+import { StackActions, useIsFocused, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -11,8 +11,8 @@ import type {
 import { useEffect, useState } from "react";
 import { AppState, Pressable, View, type ColorValue } from "react-native";
 
-import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
+import { AppText as Text } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
@@ -158,11 +158,15 @@ export function ThreadSubagentGroup(props: {
                 }
                 disabled={threadId === null}
                 onPress={() => {
+                  // Push, not navigate: navigate reuses this Thread route, so back
+                  // would skip the parent thread.
                   if (threadId !== null)
-                    navigation.navigate("Thread", {
-                      environmentId: String(props.environmentId),
-                      threadId: String(threadId),
-                    });
+                    navigation.dispatch(
+                      StackActions.push("Thread", {
+                        environmentId: String(props.environmentId),
+                        threadId: String(threadId),
+                      }),
+                    );
                 }}
                 className="rounded-lg px-3 py-3 active:bg-subtle"
               >
