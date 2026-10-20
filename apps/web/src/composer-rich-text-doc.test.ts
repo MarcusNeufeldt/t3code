@@ -1,10 +1,10 @@
-import { getSchemaByResolvedExtensions, Node, resolveExtensions } from "@tiptap/core";
+import { Editor, getSchemaByResolvedExtensions, Node, resolveExtensions } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { TaskList } from "@tiptap/extension-task-list";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { EditorState, TextSelection } from "@tiptap/pm/state";
 import { splitBlockKeepMarks } from "@tiptap/pm/commands";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, onTestFinished } from "vite-plus/test";
 
 import { collapseExpandedComposerCursor, pastedPathQueryLength } from "./composer-logic";
 
@@ -86,6 +86,54 @@ function roundTrip(value: string) {
   return serializeEditorDoc(doc);
 }
 
+describe("editable math source", () => {
+  it.each([
+    "Area $x_i^2$ after",
+    "before \\(\\frac{1}{2}\\) after",
+    "before $$x^2$$ after",
+    "\\[\nx = 1\ny = 2\n\\]",
+    "\\[\\text{use $browser then @README.md and **literal**}\\]",
+    "```math\nx_i + y_i\n```",
+    "- **use** $x_i$ then @README.md",
+    "**$x_i$** and **A $x_i$ B**",
+    "| Name | Formula |\n| --- | --- |\n| Norm | $|x|$ |",
+    "| Name | Formula |\n| --- | --- |\n| Norm | \\(\\|x\\|\\) |",
+  ])("keeps TeX editable and round trips its source: %s", (source) => {
+    const map = roundTrip(source);
+    expect(map.value).toBe(source);
+    expect(map.runs.some((run) => run.nodeName === "composer-math")).toBe(false);
+    const doc = schema.nodeFromJSON(
+      buildDocJson(source, (name) => ({ label: name, description: null })),
+    );
+    expect(serializeSelection(doc, 1, doc.content.size - 1)).toBe(source);
+  });
+
+  it("edits a command character directly without replacing a formula node", () => {
+    const source = "before \\(\\frac{a}{b}\\) after";
+    const doc = schema.nodeFromJSON(
+      buildDocJson(source, (name) => ({ label: name, description: null })),
+    );
+    const map = serializeEditorDoc(doc);
+    const offset = source.indexOf("{a}") + 1;
+    const position = flatToPm(map, offset);
+    const state = EditorState.create({ doc });
+    const next = state.apply(state.tr.insertText("c", position, position + 1));
+    expect(serializeEditorDoc(next.doc).value).toBe(source.replace("{a}", "{c}"));
+  });
+  it("preserves formula source as text when styling is disabled", () => {
+    const source =
+      "\\[\n\\text{use $browser, @README.md and [file](t3-context://v1/file/ctx_1)}\n\\]";
+    const doc = plainSchema.nodeFromJSON(
+      buildDocJson(source, (name) => ({ label: name, description: null }), { styling: false }),
+    );
+    const map = serializeEditorDoc(doc);
+    expect(map.value).toBe(source);
+    expect(map.runs.some((run) => run.kind === "token")).toBe(false);
+  });
+});
+
+// Plain mode: the same engine with the mark extensions off. Markers stay
+// literal characters and task lines stay paragraphs.
 const plainSchema = getSchemaByResolvedExtensions(
   resolveExtensions([
     StarterKit.configure({
@@ -1154,5 +1202,124 @@ describe("caret stops at styled edges", () => {
     expect(stepCaretAcrossStyledEdge(stateAt("**bold** tail", 3), -1)).toBeNull();
     expect(stepCaretAcrossStyledEdge(stateAt("plain text", 1), -1)).toBeNull();
     expect(caretTakesMarksBefore(stateAt("plain text", 1))).toBe(false);
+  });
+});
+
+describe("inline code entry", () => {
+  function editorFor(block = "paragraph", mark?: string) {
+    const editor = new Editor({
+      element: null,
+      extensions: [
+        StarterKit.configure({ code: false, codeBlock: false, trailingNode: false }),
+        ComposerCodeExtension,
+        ComposerCodeBlockExtension,
+        stubAtom("composer-mention", { path: { default: "" }, source: { default: "" } }),
+      ],
+      content: { type: "doc", content: [{ type: block }] },
+    });
+    // Unmounted editors need the same plugins that Tiptap installs on mount.
+    editor.view.updateState(editor.state.reconfigure({ plugins: editor.extensionManager.plugins }));
+    if (mark) editor.commands.setMark(mark);
+    onTestFinished(() => editor.destroy());
+    return editor;
+  }
+
+  function type(editor: Editor, text: string) {
+    for (const ch of text) {
+      const { from, to } = editor.state.selection;
+      const insert = () => editor.state.tr.insertText(ch, from, to);
+      const handled = editor.state.plugins.some((plugin) =>
+        plugin.props.handleTextInput?.call(plugin, editor.view, from, to, ch, insert),
+      );
+      if (!handled) editor.view.dispatch(insert());
+    }
+  }
+
+  it.each(["", "prefix ", "@README.md"])(
+    "formats a filled pair after %j, leaves following text plain, and keeps the normal input rule",
+    (prefix) => {
+      const editor = editorFor();
+      if (prefix === "@README.md") {
+        editor.commands.insertContent({
+          type: "composer-mention",
+          attrs: { path: "README.md", source: prefix },
+        });
+      } else {
+        type(editor, prefix);
+      }
+      const offset = editor.state.selection.from - 1;
+      type(editor, "``");
+      editor.commands.setTextSelection(offset + 2);
+      type(editor, "hello world");
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(`${prefix}\`hello world\``);
+      expect(editor.state.doc.firstChild?.lastChild?.marks).toEqual([]);
+
+      editor.commands.setTextSelection(offset + 14);
+      expect(editor.state.doc.textContent).toBe(
+        `${prefix === "@README.md" ? "" : prefix}hello world`,
+      );
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(`${prefix}\`hello world\``);
+      type(editor, " next `typed`");
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(
+        `${prefix}\`hello world\` next \`typed\``,
+      );
+      const formatted = editor.state.doc.toJSON();
+      let undos = 0;
+      while (editor.commands.undo()) undos += 1;
+      expect(undos).toBeGreaterThan(0);
+      expect(serializeEditorDoc(editor.state.doc).value).toBe("");
+      for (let i = 0; i < undos; i += 1) expect(editor.commands.redo()).toBe(true);
+      expect(editor.state.doc.toJSON()).toEqual(formatted);
+    },
+  );
+
+  it("keeps composition edits literal until the caret leaves the typed pair", () => {
+    const editor = editorFor();
+    type(editor, "``");
+    editor.commands.setTextSelection(2);
+    editor.view.dispatch(editor.state.tr.insertText("世").setMeta("composition", 1));
+    editor.view.dispatch(editor.state.tr.insertText("世界", 2, 3).setMeta("composition", 1));
+    expect(editor.state.doc.textContent).toBe("`世界`");
+    expect(editor.state.doc.firstChild?.firstChild?.marks).toEqual([]);
+    editor.commands.setTextSelection(5);
+    expect(editor.state.doc.textContent).toBe("世界");
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("`世界`");
+  });
+
+  it.each(["paste", "setContent"])("keeps a %s pair literal after moving through it", (source) => {
+    const editor = editorFor();
+    const literal = "`literal`";
+    if (source === "paste") {
+      editor.view.dispatch(editor.state.tr.insertText(literal).setMeta("uiEvent", "paste"));
+    } else {
+      type(editor, "``");
+      editor.commands.setContent({
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: literal }] }],
+      });
+    }
+    const before = editor.state.doc.toJSON();
+    editor.commands.setTextSelection(2);
+    editor.commands.setTextSelection(literal.length + 1);
+    expect(editor.state.doc.toJSON()).toEqual(before);
+  });
+
+  it.each([
+    { name: "doubled delimiters", delimiters: "````", caret: 3 },
+    { name: "doubled closing delimiters", delimiters: "```", caret: 2 },
+    { name: "bold text", delimiters: "``", caret: 2, mark: "bold" },
+    { name: "existing inline code", delimiters: "``", caret: 2, mark: "code" },
+    { name: "a code block", delimiters: "``", caret: 2, block: "codeBlock" },
+  ])("leaves $name unchanged on caret movement", ({ delimiters, caret, mark, block }) => {
+    const editor = editorFor(block, mark);
+    type(editor, delimiters);
+    editor.commands.setTextSelection(caret);
+    type(editor, "literal");
+    const before = editor.state.doc.toJSON();
+    // Visit both the gap between closing ticks and the end of the pair.
+    editor.commands.setTextSelection(caret + "literal".length + 1);
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    expect(editor.state.doc.toJSON()).toEqual(before);
   });
 });

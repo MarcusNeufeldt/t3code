@@ -2418,9 +2418,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               return yield* protocolError("Pi session has no registered thread");
             }
             if (state.activeTurn !== null) {
-              return yield* protocolError(
-                `Pi provider thread ${turnInput.providerThread.id} already has an active turn`,
-              );
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: PI_PROVIDER,
+                detail: `Pi provider thread ${turnInput.providerThread.id} already has an active turn`,
+                reason: "previous_turn_active",
+              });
             }
             if (
               state.providerThread.nativeThreadRef?.nativeId !==
@@ -3189,7 +3191,11 @@ function piQuestion(
     method === "select" && Array.isArray(event["options"])
       ? event["options"]
           .filter((option): option is string => typeof option === "string")
-          .map((option) => ({ label: option || "Empty value", description: option, value: option }))
+          .map((option) => ({
+            label: option || "Empty value",
+            description: option || "Empty value",
+            value: option,
+          }))
       : method === "editor"
         ? []
         : [
