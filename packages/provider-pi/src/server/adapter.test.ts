@@ -166,6 +166,7 @@ interface FakePi {
   readonly deferNextLifecycle: (type: "switch_session" | "new_session" | "fork") => void;
   readonly deferNextModelSelection: () => void;
   readonly queueModels: (models: ReadonlyArray<unknown>) => void;
+  readonly setCommands: (commands: ReadonlyArray<unknown>) => void;
   readonly vetoNextNewSession: () => void;
   readonly allRequests: () => ReadonlyArray<PiRpcRecord>;
   readonly queueStats: (data: unknown) => void;
@@ -207,6 +208,7 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
   let sessionFile = FAKE_SESSION_FILE;
   let sessionGeneration = 0;
   let models: ReadonlyArray<unknown> = [];
+  let commands: ReadonlyArray<unknown> = [];
   let isStreaming: boolean | null = null;
   let stdinBuffer = "";
 
@@ -254,6 +256,8 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
         return base;
       case "get_available_models":
         return { ...base, data: { models } };
+      case "get_commands":
+        return { ...base, data: { commands } };
       case "new_session": {
         const cancelled = vetoNewSession;
         vetoNewSession = false;
@@ -373,6 +377,9 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
     },
     queueModels: (value) => {
       models = value;
+    },
+    setCommands: (value) => {
+      commands = value;
     },
     vetoNextNewSession: () => {
       vetoNewSession = true;
@@ -1764,6 +1771,66 @@ describe("PiAdapterV2", () => {
       assert.isTrue(
         updated.type === "provider_thread.updated" && updated.providerThread.id === placeholder.id,
       );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("switches Codex fast mode through the codex-fast extension", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      fake.setCommands([{ name: "fast", source: "extension" }]);
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+
+      yield* startTurn(runtime, providerThread, "default", [], "Hello pi", {
+        instanceId: PI_INSTANCE_ID,
+        model: "openai-codex/gpt-6-luna",
+        options: [{ id: "fastMode", value: true }],
+      });
+      const on = yield* fake.takeRequest("prompt");
+      assert.equal(on["message"], "/fast on quiet");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({ type: "agent_end", messages: [], willRetry: false });
+      yield* fake.emit({ type: "agent_settled" });
+      yield* takeEvent((event) => event.type === "turn.terminal");
+
+      yield* startTurn(
+        runtime,
+        providerThread,
+        "default",
+        [],
+        "Hello pi",
+        { instanceId: PI_INSTANCE_ID, model: "openai-codex/gpt-6-luna" },
+        2,
+      );
+      const fastPrompts = fake
+        .allRequests()
+        .filter((request) => String(request["message"]).startsWith("/fast"))
+        .map((request) => request["message"]);
+      assert.deepEqual(fastPrompts, ["/fast on quiet", "/fast off quiet"]);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("never sends /fast as a message when the codex-fast extension is missing", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread, "default", [], "Hello pi", {
+        instanceId: PI_INSTANCE_ID,
+        model: "openai-codex/gpt-6-luna",
+        options: [{ id: "fastMode", value: true }],
+      });
+      const prompt = yield* fake.takeRequest("prompt");
+      assert.notInclude(String(prompt["message"]), "/fast");
+      assert.isTrue(fake.allRequests().some((request) => request.type === "get_commands"));
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

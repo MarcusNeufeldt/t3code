@@ -43,6 +43,7 @@ import {
   thinkingCapabilitiesForPiModel,
 } from "./thinkingCapabilities.ts";
 import {
+  hasPiExtensionCommand,
   parsePiDiscoveredCommands,
   withPiBuiltinSlashCommands,
   type PiDiscoveredCommands,
@@ -114,6 +115,7 @@ function piModelDisplayName(provider: string, name: string): string {
 function parseDiscoveredModels(
   data: unknown,
   state: unknown,
+  fastCommandAvailable = false,
 ): Result.Result<ReadonlyArray<ServerProviderModel>, PiRpcError> {
   const models = recordField(data, "models");
   if (!Array.isArray(models)) {
@@ -154,6 +156,7 @@ function parseDiscoveredModels(
         provider === activeProvider && id === activeModelId
           ? recordString(state, "thinkingLevel")
           : undefined,
+        fastCommandAvailable,
       ),
     });
   }
@@ -199,7 +202,9 @@ const discoverPiViaRpc = Effect.fn("PiProviderStatus.discoverPiViaRpc")(function
   const commandsData = yield* connection
     .request({ type: "get_commands" })
     .pipe(Effect.orElseSucceed(() => undefined));
-  const discoveredModels = yield* Effect.fromResult(parseDiscoveredModels(modelsData, stateData));
+  const discoveredModels = yield* Effect.fromResult(
+    parseDiscoveredModels(modelsData, stateData, hasPiExtensionCommand(commandsData, "fast")),
+  );
   const { slashCommands, skills } = parsePiDiscoveredCommands(commandsData);
   return {
     models: discoveredModels,

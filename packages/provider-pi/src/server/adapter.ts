@@ -1,6 +1,9 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import {
+  getModelSelectionBooleanOptionValue,
+  getModelSelectionStringOptionValue,
+} from "@t3tools/shared/model";
 import { readToolOutputImage } from "@t3tools/shared/toolOutput";
 import * as Predicate from "effect/Predicate";
 import {
@@ -41,7 +44,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import { parsePiCompactCommand, type PiCompactCommand } from "./commands.ts";
+import { hasPiExtensionCommand, parsePiCompactCommand, type PiCompactCommand } from "./commands.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -548,6 +551,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       );
       let appliedModel: string | null = null;
       let appliedThinking: string | null = null;
+      // The codex-fast extension starts every Pi session with fast mode off.
+      let appliedFast = false;
+      let fastCommandAvailable: boolean | null = null;
       let appliedSessionName: string | null = null;
       const outOfTurnExtensionErrors: Array<PiRpcRecord> = [];
       let lastKnownLeaf: string | null = null;
@@ -2182,6 +2188,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         appliedModel = null;
         appliedThinking = null;
         appliedSessionName = null;
+        appliedFast = false;
         const listing = yield* request({ type: "get_entries" }).pipe(
           Effect.orElseSucceed(() => undefined),
         );
@@ -2228,6 +2235,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           appliedModel = null;
           appliedThinking = null;
           appliedSessionName = null;
+          appliedFast = false;
           baselineModel = null;
           baselineThinking = null;
           contextWindow = null;
@@ -2375,6 +2383,18 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           yield* request({ type: "set_thinking_level", level: thinking });
           appliedThinking = thinking;
         }
+        const fast = getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true;
+        if (fast === appliedFast) return;
+        if (fastCommandAvailable === null) {
+          const listing = yield* request({ type: "get_commands" }).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+          fastCommandAvailable = hasPiExtensionCommand(listing, "fast");
+        }
+        // Without the extension, /fast would reach the model as a user message.
+        if (!fastCommandAvailable) return;
+        yield* request({ type: "prompt", message: fast ? "/fast on quiet" : "/fast off quiet" });
+        appliedFast = fast;
       });
 
       const resolvePromptPayload = Effect.fnUntraced(function* (
@@ -2985,6 +3005,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       appliedModel = null;
                       appliedThinking = null;
                       appliedSessionName = null;
+                      appliedFast = false;
                       lastKnownLeaf = leafId;
                       leafCursorStale = entriesData === undefined;
                       syncedSessionBytes = yield* sessionFileBytes(forkSessionFile);

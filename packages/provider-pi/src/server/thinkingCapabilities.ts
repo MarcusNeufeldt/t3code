@@ -24,22 +24,30 @@ export const EMPTY_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabil
 export function thinkingCapabilitiesForPiModel(
   model: unknown,
   defaultThinkingLevel: unknown,
+  fastCommandAvailable = false,
 ): ModelCapabilities {
   const levels = supportedPiThinkingLevelsFromModel(model);
-  if (levels.length === 0) return EMPTY_PI_MODEL_CAPABILITIES;
+  // The codex-fast extension's /fast puts OpenAI Codex requests on the priority tier.
+  const fast = fastCommandAvailable && recordField(model, "provider") === "openai-codex";
+  if (levels.length === 0 && !fast) return EMPTY_PI_MODEL_CAPABILITIES;
   const defaultLevel = clampPiThinkingLevel(defaultThinkingLevel, levels);
   return createModelCapabilities({
     optionDescriptors: [
-      {
-        id: "thinking",
-        label: "Thinking",
-        type: "select",
-        options: levels.map((level): ProviderOptionChoice => ({
-          id: level,
-          label: PI_THINKING_LEVEL_LABELS[level],
-          ...(level === defaultLevel ? { isDefault: true } : {}),
-        })),
-      },
+      ...(levels.length === 0
+        ? []
+        : [
+            {
+              id: "thinking",
+              label: "Thinking",
+              type: "select" as const,
+              options: levels.map((level): ProviderOptionChoice => ({
+                id: level,
+                label: PI_THINKING_LEVEL_LABELS[level],
+                ...(level === defaultLevel ? { isDefault: true } : {}),
+              })),
+            },
+          ]),
+      ...(fast ? [{ id: "fastMode", label: "Fast mode", type: "boolean" as const }] : []),
     ],
   });
 }

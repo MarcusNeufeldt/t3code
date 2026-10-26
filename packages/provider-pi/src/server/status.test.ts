@@ -52,7 +52,7 @@ function piProbeSpawner(version: string) {
   });
 }
 
-const piDiscoverySpawner = (inventory: unknown) =>
+const piDiscoverySpawner = (inventory: unknown, commands: ReadonlyArray<unknown> = []) =>
   Effect.gen(function* () {
     const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
     let stdinBuffer = "";
@@ -70,7 +70,7 @@ const piDiscoverySpawner = (inventory: unknown) =>
             request.type === "get_available_models"
               ? inventory
               : request.type === "get_commands"
-                ? { commands: [] }
+                ? { commands }
                 : {};
           yield* Queue.offer(
             stdout,
@@ -136,6 +136,30 @@ describe("PiProvider", () => {
           ["nano-gpt/unnamed-model", "nano-gpt · unnamed-model"],
         ],
       );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("offers fast mode on Codex models only when the /fast extension is loaded", () =>
+    Effect.gen(function* () {
+      const inventory = {
+        models: [
+          { provider: "openai-codex", id: "gpt-6-luna", name: "GPT-6 Luna" },
+          { provider: "xai", id: "grok-5", name: "Grok 5" },
+        ],
+      };
+      const optionIds = (fast: ReadonlyArray<unknown>, slug: string) =>
+        Effect.gen(function* () {
+          const spawner = yield* piDiscoverySpawner(inventory, fast);
+          const snapshot = yield* checkPiProviderStatus(settings).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+          const model = snapshot.models.find((candidate) => candidate.slug === slug);
+          return (model?.capabilities?.optionDescriptors ?? []).map((option) => option.id);
+        });
+      const withFast = [{ name: "fast", source: "extension" }];
+      assert.include(yield* optionIds(withFast, "openai-codex/gpt-6-luna"), "fastMode");
+      assert.notInclude(yield* optionIds(withFast, "xai/grok-5"), "fastMode");
+      assert.notInclude(yield* optionIds([], "openai-codex/gpt-6-luna"), "fastMode");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

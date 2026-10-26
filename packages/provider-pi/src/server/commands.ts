@@ -94,6 +94,17 @@ function recordField(input: unknown, key: string): unknown {
   return Predicate.isObject(input) ? input[key] : undefined;
 }
 
+export function hasPiExtensionCommand(data: unknown, name: string): boolean {
+  const commands = recordField(data, "commands");
+  return (
+    Array.isArray(commands) &&
+    commands.some(
+      (command) =>
+        recordField(command, "name") === name && recordField(command, "source") === "extension",
+    )
+  );
+}
+
 function recordString(input: unknown, key: string): string | undefined {
   const value = recordField(input, key);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
