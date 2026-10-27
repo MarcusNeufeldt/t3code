@@ -304,7 +304,10 @@ const make = Effect.gen(function* () {
               return yield* new AgentSessionThreadModifiedError({ threadId });
             }
             yield* persistRuntime;
-            yield* runtimes.recordImportedTranscript({ threadId, source });
+            // The recorded size is ClaudeSessionCatchUp's read offset; it moves it.
+            if (thread.source !== "claudeAgent") {
+              yield* runtimes.recordImportedTranscript({ threadId, source });
+            }
             return true;
           }
           if (thread.source === "pi" && (yield* isPiSessionFileLinked(nativeThreadId))) {

@@ -2180,6 +2180,27 @@ describe("parseAgentSessionTranscript", () => {
     expect(thread?.messages.map((message) => message.text)).toEqual([prompt]);
   });
 
+  it("skips Claude transcripts written through the Agent SDK", () => {
+    const line = (entrypoint: string) =>
+      JSON.stringify({
+        type: "user",
+        sessionId: "claude-session",
+        entrypoint,
+        message: { role: "user", content: "Fix authentication" },
+      });
+    const parse = (entrypoint: string) =>
+      AgentSessionScanner.parseAgentSessionTranscript({
+        contents: line(entrypoint),
+        source: "claudeAgent",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        fallbackSessionId: "fallback",
+        lastActiveAtMs: Date.parse("2026-08-24T12:00:00.000Z"),
+      });
+
+    expect(parse("sdk-ts")).toBeNull();
+    expect(parse("cli")?.messages).toHaveLength(1);
+  });
+
   it("skips sessions without a visible user message", () => {
     const thread = AgentSessionScanner.parseAgentSessionTranscript({
       contents: JSON.stringify({

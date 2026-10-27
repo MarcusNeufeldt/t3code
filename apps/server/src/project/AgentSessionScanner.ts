@@ -92,6 +92,8 @@ const TranscriptRecord = Schema.Struct({
   sessionId: Schema.optional(Schema.String),
   aiTitle: Schema.optional(Schema.String),
   customTitle: Schema.optional(Schema.String),
+  // Claude: "cli" for the terminal, "sdk-ts" when the Agent SDK drove the session.
+  entrypoint: Schema.optional(Schema.String),
   isSidechain: Schema.optional(Schema.Boolean),
   isMeta: Schema.optional(Schema.Boolean),
   isCompactSummary: Schema.optional(Schema.Boolean),
@@ -265,6 +267,7 @@ interface ClaudeFields {
   readonly title: string | undefined;
   readonly customTitle: string | null;
   readonly model: string | undefined;
+  readonly sdk: boolean;
 }
 
 const emptyClaudeFields: ClaudeFields = {
@@ -272,6 +275,7 @@ const emptyClaudeFields: ClaudeFields = {
   title: undefined,
   customTitle: null,
   model: undefined,
+  sdk: false,
 };
 
 function foldClaudeFields(fields: ClaudeFields, record: DecodedTranscriptRecord): ClaudeFields {
@@ -286,6 +290,7 @@ function foldClaudeFields(fields: ClaudeFields, record: DecodedTranscriptRecord)
     // Claude uses this sentinel for local error responses. It is not a
     // model ID that can be selected when the imported session resumes.
     model: model && model !== "<synthetic>" ? model : fields.model,
+    sdk: fields.sdk || record.entrypoint === "sdk-ts",
   };
 }
 
@@ -398,6 +403,9 @@ function parseAgentSessionRecords(
   claudeFields: ClaudeFields,
 ): AgentSessionThread | null {
   if (input.source === "pi") return parsePiSessionRecords(input, records);
+  // Devbox: Agent SDK transcripts are T3's own Claude threads or pi-claude-bridge
+  // copies of Pi sessions; both already have a T3 thread.
+  if (input.source === "claudeAgent" && claudeFields.sdk) return null;
   const fallbackTimestamp = DateTime.formatIso(DateTime.makeUnsafe(input.lastActiveAtMs));
   // Claude filenames are session IDs. Codex rollout filenames include extra
   // timestamp text, so only transcript metadata can provide a resumable ID.

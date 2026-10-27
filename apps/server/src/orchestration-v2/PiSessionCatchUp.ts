@@ -119,14 +119,16 @@ export function piMessagesAfterHead(
   return { leafId: newest, messages };
 }
 
-function messageEvents(
+/** Also used by ClaudeSessionCatchUp, with its own event prefix. */
+export function messageEvents(
   threadId: ThreadId,
   runId: RunId | null,
   message: PiCatchUpMessage,
   ordinal: number,
+  prefix: string = EVENT_PREFIX,
 ): ReadonlyArray<OrchestrationV2DomainEvent> {
   const key = `${threadId}:${message.entryId}`;
-  const messageId = MessageId.make(`${EVENT_PREFIX}:${key}`);
+  const messageId = MessageId.make(`${prefix}:${key}`);
   const at = DateTime.makeUnsafe(message.createdAt);
   const conversationMessage: OrchestrationV2ConversationMessage = {
     createdBy: message.role === "user" ? "user" : "agent",
@@ -143,7 +145,7 @@ function messageEvents(
     updatedAt: at,
   };
   const common = {
-    id: TurnItemId.make(`${EVENT_PREFIX}:turn-item:${key}`),
+    id: TurnItemId.make(`${prefix}:turn-item:${key}`),
     threadId,
     // Positions are allocated per run; joining the latest run keeps these after it.
     runId,
@@ -180,14 +182,14 @@ function messageEvents(
         };
   return [
     {
-      id: EventId.make(`${EVENT_PREFIX}:message:${key}`),
+      id: EventId.make(`${prefix}:message:${key}`),
       type: "message.updated",
       threadId,
       occurredAt: at,
       payload: conversationMessage,
     },
     {
-      id: EventId.make(`${EVENT_PREFIX}:turn-item:${key}`),
+      id: EventId.make(`${prefix}:turn-item:${key}`),
       type: "turn-item.updated",
       threadId,
       occurredAt: at,
