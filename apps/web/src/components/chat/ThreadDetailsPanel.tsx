@@ -22,6 +22,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { DevboxBoard } from "./DevboxBoard";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -191,6 +192,8 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               threadId={props.threadId}
             />
           ) : null}
+
+          {density !== "essential" ? <DevboxBoard /> : null}
         </>
       )}
     </ThreadDetailsCard>

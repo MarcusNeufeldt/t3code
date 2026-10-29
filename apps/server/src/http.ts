@@ -56,6 +56,7 @@ import {
 } from "./httpCors.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import { handleTranscribeRequest, TRANSCRIBE_ROUTE_PATH } from "./transcribe/Transcribe.ts";
+import { DEVBOX_BOARD_ROUTE_PATH, handleDevboxBoardRequest } from "./devboxBoard/DevboxBoard.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -392,6 +393,21 @@ export const layerTranscribeRoute = HttpRouter.add(
   Effect.gen(function* () {
     yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
     return yield* handleTranscribeRequest().pipe(Effect.provide(ProcessRunner.layer));
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
+  ),
+);
+
+export const layerDevboxBoardRoute = HttpRouter.add(
+  "GET",
+  DEVBOX_BOARD_ROUTE_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
+    return yield* handleDevboxBoardRequest();
   }).pipe(
     Effect.catchTags({
       EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
